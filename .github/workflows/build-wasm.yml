@@ -1,0 +1,49 @@
+name: Build and publish Berserk WASM
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+  push:
+    branches: [main]
+    paths: [".github/workflows/build-wasm.yml"]
+permissions:
+  contents: write
+jobs:
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout API repository
+        uses: actions/checkout@v4
+      - name: Install Rust nightly and WASM target
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev git
+      - name: Checkout engine source
+        uses: actions/checkout@v4
+        with:
+          repository: official-knightly/Berserk
+          path: engine
+      - name: Build browser files
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd engine
+          sed -i 's/^edition = "2026"$/edition = "2024"/' Cargo.toml
+          cp wasm/build-attacks.rs build/attacks.rs
+          cargo build --release --target wasm32-unknown-unknown --no-default-features
+          WB_VERSION="$(awk '/^name = "wasm-bindgen"$/{getline; if ($1 == "version") {gsub(/"/, "", $3); print $3; exit}}' Cargo.lock)"
+          test -n "$WB_VERSION"
+          cargo install wasm-bindgen-cli --version "$WB_VERSION" --locked
+          mkdir -p ../wasm
+          wasm-bindgen --target web --out-dir ../wasm --out-name berserk target/wasm32-unknown-unknown/release/berserk.wasm
+          printf '%s\n' '# Berserk WebAssembly' '' 'Keep berserk.js and berserk_bg.wasm together and serve over HTTP(S).' '' 'Search is synchronous; use a Web Worker for UI responsiveness. Syzygy is disabled in this WASM build.' > ../wasm/README.md
+      - name: Commit generated WASM files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add wasm/
+          if git diff --cached --quiet; then echo "WASM artifacts unchanged"; exit 0; fi
+          git commit -m "Build Berserk WASM browser artifacts"
+          git push
